@@ -1,0 +1,4 @@
+langchain-community>=0.3.1
+langgraph>=0.2.32
+starlette>=0.39.2
+uvicorn[standard]>=0.31.0

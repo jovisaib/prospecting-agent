@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Conversation Assistant</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        :root {
+            --primary-color: #6366F1;
+            --secondary-color: #F3F4F6;
+            --text-color: #1F2937;
+            --accent-color: #10B981;
+            --input-color: #34D399;
+            --output-color: #F87171;
+        }
+        body {
+            font-family: 'Inter', sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: var(--secondary-color);
+            color: var(--text-color);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            overflow: hidden;
+        }
+        #container {
+            width: 100%;
+            max-width: 500px;
+            background-color: rgba(255, 255, 255, 0.8);
+            backdrop-filter: blur(10px);
+            border-radius: 20px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.1);
+            padding: 2rem;
+            text-align: center;
+            z-index: 10;
+        }
+        h1 {
+            font-size: 2.5rem;
+            font-weight: 600;
+            margin-bottom: 1.5rem;
+            color: var(--primary-color);
+        }
+        #toggleAudio {
+            font-size: 1rem;
+            font-weight: 500;
+            padding: 0.75rem 1.5rem;
+            cursor: pointer;
+            background-color: var(--primary-color);
+            color: white;
+            border: none;
+            border-radius: 50px;
+            transition: all 0.3s ease;
+            outline: none;
+            width: 100%;
+            max-width: 250px;
+        }
+        #toggleAudio:hover {
+            background-color: #4F46E5;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 20px rgba(99, 102, 241, 0.4);
+        }
+        #status {
+            margin-top: 1rem;
+            font-style: italic;
+            color: #6B7280;
+            font-weight: 400;
+        }
+        #visualizer {
+            width: 100%;
+            height: 120px;
+            background-color: rgba(255, 255, 255, 0.5);
+            margin-top: 1.5rem;
+            border-radius: 10px;
+            overflow: hidden;
+        }
+        #webgl-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: -1;
+        }
+        @media (min-width: 768px) {
+            #container {
+                max-width: 600px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="webgl-container"></div>
+    <div id="container">
+        <h1>AI Conversation Assistant</h1>
+        <button id="toggleAudio">Start Conversation</button>
+        <p id="status">Ready to start</p>
+        <canvas id="visualizer"></canvas>
+    </div>
+
+    <script>
+        // Three.js background effect
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.getElementById('webgl-container').appendChild(renderer.domElement);
+
+        const geometry = new THREE.TorusKnotGeometry(10, 3, 100, 16);
+        const material = new THREE.MeshBasicMaterial({ color: 0x6366F1, wireframe: true });
+        const torusKnot = new THREE.Mesh(geometry, material);
+        scene.add(torusKnot);
+
+        camera.position.z = 30;
+
+        function animate() {
+            requestAnimationFrame(animate);
+            torusKnot.rotation.x += 0.01;
+            torusKnot.rotation.y += 0.01;
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // Create audio context
+        const BUFFER_SIZE = 4800;
+        class Player {
+            constructor() {
+                this.playbackNode = null;
+                this.analyser = null;
+            }
+
+            async init(sampleRate) {
+                const audioContext = new AudioContext({ sampleRate });
+                await audioContext.audioWorklet.addModule("/audio-playback-worklet.js");
+
+                this.playbackNode = new AudioWorkletNode(audioContext, "audio-playback-worklet");
+                this.analyser = audioContext.createAnalyser();
+                this.analyser.fftSize = 2048;
+                
+                this.playbackNode.connect(this.analyser);
+                this.analyser.connect(audioContext.destination);
+            }
+
+            play(buffer) {
+                if (this.playbackNode) {
+                    this.playbackNode.port.postMessage(buffer);
+                }
+            }
+
+            stop() {                if (this.playbackNode) {
+                    this.playbackNode.port.postMessage(null);
+                }
+            }
+
+            getAnalyser() {
+                return this.analyser;
+            }
+        }   
+
+        class Recorder {
+            constructor(onDataAvailable) {
+                this.onDataAvailable = onDataAvailable;
+                this.audioContext = null;
+                this.mediaStream = null;
+                this.mediaStreamSource = null;
+                this.workletNode = null;
+                this.analyser = null;
+            }
+
+            async start(stream) {
+                console.log('starting')
+                try {
+                    if (this.audioContext) {
+                        await this.audioContext.close();
+                    }
+
+                    this.audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
+                    console.log('1')
+
+                    await this.audioContext.audioWorklet.addModule("/audio-processor-worklet.js");
+                    console.log('2')
+
+                    this.mediaStream = stream;
+                    this.mediaStreamSource = this.audioContext.createMediaStreamSource(this.mediaStream);
+
+                    this.analyser = this.audioContext.createAnalyser();
+                    this.analyser.fftSize = 2048;
+
+                    this.workletNode = new AudioWorkletNode(this.audioContext, "audio-processor-worklet");
+                    this.workletNode.port.onmessage = event => {
+                        this.onDataAvailable(event.data.buffer);
+                    };
+
+                    this.mediaStreamSource.connect(this.analyser);
+                    this.analyser.connect(this.workletNode);
+                    this.workletNode.connect(this.audioContext.destination);
+                    console.log('done')
+                } catch (error) {
+                    console.log('error', error)
+                    this.stop();
+                }
+            }
+
+            async stop() {
+                if (this.mediaStream) {
+                    this.mediaStream.getTracks().forEach(track => track.stop());
+                    this.mediaStream = null;
+                }
+
+                if (this.audioContext) {
+                    await this.audioContext.close();
+                    this.audioContext = null;
+                }
+
+                this.mediaStreamSource = null;
+                this.workletNode = null;
+                this.analyser = null;
+            }
+
+            getAnalyser() {
+                return this.analyser;
+            }
+        }
+
+        // Function to get microphone input and send it to WebSocket
+        async function startAudio() {
+            try {
+                // handle output -> speaker stuff
+                const ws = new WebSocket("ws://localhost:3000/ws");
+
+                const audioPlayer = new Player();
+                await audioPlayer.init(24000);
+
+                ws.onmessage = event => {
+                    const data = JSON.parse(event.data);
+                    if (data?.type !== 'response.audio.delta') return;
+
+                    const binary = atob(data.delta);
+                    const bytes = Uint8Array.from(binary, c => c.charCodeAt(0));
+                    const pcmData = new Int16Array(bytes.buffer);
+
+                    audioPlayer.play(pcmData);
+                };
+
+                let buffer = new Uint8Array();
+
+                const appendToBuffer = (newData) => {
+                    const newBuffer = new Uint8Array(buffer.length + newData.length);
+                    newBuffer.set(buffer);
+                    newBuffer.set(newData, buffer.length);
+                    buffer = newBuffer;
+                };
+
+                const handleAudioData = (data) => {
+                    const uint8Array = new Uint8Array(data);
+                    appendToBuffer(uint8Array);
+
+                    if (buffer.length >= BUFFER_SIZE) {
+                        const toSend = new Uint8Array(buffer.slice(0, BUFFER_SIZE));
+                        buffer = new Uint8Array(buffer.slice(BUFFER_SIZE));
+
+                        const regularArray = String.fromCharCode(...toSend);
+                        const base64 = btoa(regularArray);
+
+                        ws.send(JSON.stringify({type: 'input_audio_buffer.append', audio: base64}));
+                    }
+                };
+
+                // handle microphone -> input websocket
+                const audioRecorder = new Recorder(handleAudioData);
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+                await audioRecorder.start(stream);
+                
+                // Start visualizer
+                startVisualizer(audioRecorder.getAnalyser(), audioPlayer.getAnalyser());
+
+            } catch (error) {
+                console.error('Error accessing the microphone', error);
+                alert('Error accessing the microphone. Please check your settings and try again.');
+            }
+        }
+
+        // Visualizer function
+        function startVisualizer(inputAnalyser, outputAnalyser) {
+            const canvas = document.getElementById('visualizer');
+            const canvasCtx = canvas.getContext('2d');
+            const bufferLength = inputAnalyser.frequencyBinCount;
+            const inputDataArray = new Uint8Array(bufferLength);
+            const outputDataArray = new Uint8Array(bufferLength);
+
+            function draw() {
+                requestAnimationFrame(draw);
+
+                inputAnalyser.getByteFrequencyData(inputDataArray);
+                outputAnalyser.getByteFrequencyData(outputDataArray);
+
+                canvasCtx.fillStyle = 'rgba(15, 23, 42, 1)';
+                canvasCtx.fillRect(0, 0, canvas.width, canvas.height);
+
+                const barWidth = (canvas.width / bufferLength) * 2.5;
+                let inputX = 0;
+                let outputX = 0;
+
+                for (let i = 0; i < bufferLength; i++) {
+                    const inputBarHeight = inputDataArray[i] / 2;
+                    const outputBarHeight = outputDataArray[i] / 2;
+
+                    // Draw input audio bars
+                    canvasCtx.fillStyle = `rgba(52, 211, 153, ${inputBarHeight / 100})`;
+                    canvasCtx.fillRect(inputX, canvas.height - inputBarHeight, barWidth, inputBarHeight);
+
+                    // Draw output audio bars
+                    canvasCtx.fillStyle = `rgba(248, 113, 113, ${outputBarHeight / 100})`;
+                    canvasCtx.fillRect(outputX, 0, barWidth, outputBarHeight);
+
+                    inputX += barWidth + 1;
+                    outputX += barWidth + 1;
+                }
+
+                // Draw a line separating input and output
+                canvasCtx.beginPath();
+                canvasCtx.moveTo(0, canvas.height / 2);
+                canvasCtx.lineTo(canvas.width, canvas.height / 2);
+                canvasCtx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+                canvasCtx.stroke();
+            }
+
+            draw();
+        }
+
+        // Button to toggle audio
+        const toggleButton = document.getElementById('toggleAudio');
+        const statusText = document.getElementById('status');
+        let isAudioOn = false;
+
+        toggleButton.addEventListener('click', async () => {
+            if (!isAudioOn) {
+                await startAudio();
+                toggleButton.textContent = 'End Conversation';
+                statusText.textContent = 'Conversation in progress...';
+                isAudioOn = true;
+            } else {
+                // Implement stop functionality here
+                toggleButton.textContent = 'Start Conversation';
+                statusText.textContent = 'Conversation ended';
+                isAudioOn = false;
+            }
+        });
+
+    </script>
+</body>
+</html>
